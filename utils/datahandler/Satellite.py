@@ -6,6 +6,9 @@ import numpy as np
 import abc
 from datetime import datetime as dt
 from MainReader import MainReader
+import logging
+from tqdm import tqdm
+import gc
 
 ALLOWED_SATELLITES = ["MODIS", "VIIRS", "MISR"]
 
@@ -25,7 +28,7 @@ class SatelliteReader(MainReader):
     def read_data(self, satellite):
         satellite = self.__check_satellite_name(satellite)
         ds = None
-
+        logging.debug(f"Reading data for {satellite}")
         if satellite == "MODIS":
             ds = self.__read_MODIS()
 
@@ -43,11 +46,11 @@ class SatelliteReader(MainReader):
     def __read_MODIS(self):
         modis_nc = os.path.join((self.config["SATELLITES"]["MODISNC"]), "modis.nc")
         if os.path.exists(modis_nc):
-            print("Reading modis.nc ...")
-            ds = xr.open_dataset(modis_nc, chunks=100)
+            logging.info("Reading modis.nc ...")
+            ds = xr.open_dataset(modis_nc, chunks=1000)
 #            ds = ds.set_index(dim_0=["time", "lat", "lon"])
         else:
-            print("Constructing modis.nc ...")
+            logging.info("Constructing modis.nc ...")
             files = self.__get_MODIS_files()
             
             cols = ["time", "lat", "lon", "AOD", "AOD_std", "AOD_L2_std",
@@ -56,7 +59,9 @@ class SatelliteReader(MainReader):
                                         header=0, skipfooter=6, engine="python",
                                         parse_dates=[0], names=cols,
                                         date_parser=self.__get_MODIS_time())
-                            for file in files), axis=0)
+                            for file in tqdm(files, desc="concat")), axis=0)
+
+            logging.debug("Constructed pandas dataframe.")
             
             # get daily data for each lat, lon
             groupers = [pd.Grouper(key="time", freq="D"), "lat", "lon"]
@@ -64,34 +69,42 @@ class SatelliteReader(MainReader):
                         "AOD_obs_err": np.mean, "num": np.sum}
             df = df.groupby(groupers).agg(agg_dict)
             ds = xr.Dataset(df)
+            logging.debug(f"constructed Dataset: {ds}")
             
             ds = ds.reset_index("dim_0")
             ds.to_netcdf(modis_nc, mode="w")
+            if os.path.isfile(modis_nc):
+                logging.debug(f"saved file to {modis_nc}")
+            else:
+                logging.critical(f"Modis nc file was not saved {modis_nc}")
+            ds.close()
+            del ds, df
+            gc.collect()
+
+            ds_loaded = xr.open_dataset(modis_nc, chunks=1000)
         
-        return ds
+        return ds_loaded
     
     def __get_MODIS_files(self):
-        allfiles = sorted(glob.iglob(self.config["SATELLITES"]["MODIS"] + "*/*/*",
-                                     recursive=True))
-        files =[]
-        for file in allfiles:
+        allfiles = sorted(glob.iglob(self.config["SATELLITES"]["MODIS"] + "*/*/*", recursive=True))
+
+        files = []
+        for file in tqdm(allfiles, desc="read"):
             start, end = (True, True)
-            f_time = pd.Timestamp.strptime(file.split("/")[-1],
-                                           "%Y%m%d%H_obsnew.txt")
-            if self.start_date and f_time<pd.Timestamp(self.start_date):
+            f_time = pd.Timestamp.strptime(os.path.split(file)[-1], "%Y%m%d%H_obsnew.txt")
+            if self.start_date and (f_time < pd.Timestamp(self.start_date)):
                 start = False
-            if self.end_date and f_time>pd.Timestamp(self.end_date)\
-                                        .replace(hour=23, minute=59):
+            if self.end_date and (f_time > pd.Timestamp(self.end_date).replace(hour=23, minute=59)):
                 end = False
             if start and end:
                 files += [file]
         if not files:
-            raise ValueError ("No files to read.")
+            raise FileNotFoundError("No files to read.")
         return files
     
     @staticmethod
     def __get_MODIS_time():
-        return lambda x: pd.Timestamp.strptime(x,"%Y%m%d%H%M")
+        return lambda x: pd.Timestamp.strptime(x, "%Y%m%d%H%M")
     
     @abc.abstractmethod
     def __read_VIIRS(self):
@@ -124,7 +137,9 @@ class SatelliteReader(MainReader):
         file_str = "MISR_AM1_CGAS_%b_%d_%Y_F15_0032.nc"
         return dataset.assign(time=dt.strptime(file_name, file_str))
 
+
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
     Sr = SatelliteReader()
 #    viirs = Sr.read_data("VIIRS")
 #    misr = Sr.read_data("MISR")
