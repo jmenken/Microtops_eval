@@ -2,6 +2,10 @@ import os
 import glob
 import xarray as xr
 import pandas as pd
+import dask.dataframe as ddf
+import dask.array as da
+from dask.distributed import Client
+from dask.delayed import delayed
 import numpy as np
 import abc
 from datetime import datetime as dt
@@ -9,6 +13,7 @@ from MainReader import MainReader
 import logging
 from tqdm import tqdm
 import gc
+import dask
 
 ALLOWED_SATELLITES = ["MODIS", "VIIRS", "MISR"]
 
@@ -17,6 +22,7 @@ class SatelliteReader(MainReader):
         super().__init__()
         self.start_date = start_date # e.g. "2018-01-01"
         self.end_date = end_date # e.g. "2018-01-02"
+        self.client = Client()
 
     @staticmethod
     def __check_satellite_name(satellite):
@@ -42,12 +48,11 @@ class SatelliteReader(MainReader):
         
         return ds
 
-    @abc.abstractmethod
     def __read_MODIS(self):
         modis_nc = os.path.join((self.config["SATELLITES"]["MODISNC"]), "modis.nc")
-        if os.path.exists(modis_nc):
+        if os.path.exists(modis_nc + "asdf"): #TODO: change this back
             logging.info("Reading modis.nc ...")
-            ds = xr.open_dataset(modis_nc, chunks=1000)
+            ds_loaded = xr.open_dataset(modis_nc, chunks=1000)
 #            ds = ds.set_index(dim_0=["time", "lat", "lon"])
         else:
             logging.info("Constructing modis.nc ...")
@@ -55,24 +60,38 @@ class SatelliteReader(MainReader):
             
             cols = ["time", "lat", "lon", "AOD", "AOD_std", "AOD_L2_std",
                     "AOD_obs_err", "num"]
-            df = pd.concat((pd.read_csv(file, delim_whitespace=True, skiprows=1,
-                                        header=0, skipfooter=6, engine="python",
-                                        parse_dates=[0], names=cols,
-                                        date_parser=self.__get_MODIS_time())
-                            for file in tqdm(files, desc="concat")), axis=0)
 
-            logging.debug("Constructed pandas dataframe.")
+            df =ddf.concat([ddf.from_delayed(delayed(pd.read_csv(file, delim_whitespace=True, skiprows=1,
+                                            header=0, skipfooter=6, engine="python",
+                                            parse_dates=[0], names=cols,
+                                            date_parser=self.__get_MODIS_time())))
+                                for file in tqdm(files[:1000], desc="concat")], axis=0)
+
+            self.client.compute(df)
+
+            logging.debug(f"Constructed pandas dataframe.")
             
             # get daily data for each lat, lon
             groupers = [pd.Grouper(key="time", freq="D"), "lat", "lon"]
-            agg_dict = {"AOD": np.mean, "AOD_std": np.mean, "AOD_L2_std": np.mean,
-                        "AOD_obs_err": np.mean, "num": np.sum}
+            agg_dict = {"AOD": da.mean, "AOD_std": da.mean, "AOD_L2_std": da.mean,
+                        "AOD_obs_err": da.mean, "num": da.sum}
+
+            logging.debug("Now constructing groupby")
+
             df = df.groupby(groupers).agg(agg_dict)
+
+            df = self.client.compute(df.compute())
+
+
+            # logging.debug(f"{df_comp}")
+            logging.debug("Now constructing xarray dataset")
             ds = xr.Dataset(df)
             logging.debug(f"constructed Dataset: {ds}")
             
             ds = ds.reset_index("dim_0")
-            ds.to_netcdf(modis_nc, mode="w")
+            delayed_write = ds.to_netcdf(modis_nc, mode="w", compute=False)
+            with self.client:
+                delayed_write.compute()
             if os.path.isfile(modis_nc):
                 logging.debug(f"saved file to {modis_nc}")
             else:
@@ -101,12 +120,12 @@ class SatelliteReader(MainReader):
         if not files:
             raise FileNotFoundError("No files to read.")
         return files
-    
+
     @staticmethod
     def __get_MODIS_time():
         return lambda x: pd.Timestamp.strptime(x, "%Y%m%d%H%M")
-    
-    @abc.abstractmethod
+
+
     def __read_VIIRS(self):
         files = sorted(glob.glob(self.config["SATELLITES"]["VIIRS"] + "*"))
         ds = xr.open_mfdataset(files,
@@ -121,7 +140,6 @@ class SatelliteReader(MainReader):
         file_str = "NOAA_EPS_AOD_%Y%m%d.nc"
         return dataset.assign(time=dt.strptime(file_name, file_str))
 
-    @abc.abstractmethod
     def __read_MISR(self):
         files = sorted(glob.glob(self.config["SATELLITES"]["MISR"] + "*"))
         ds = xr.open_mfdataset(files,
