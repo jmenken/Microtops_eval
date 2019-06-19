@@ -6,7 +6,6 @@ import numpy as np
 import abc
 from datetime import datetime as dt
 from MainReader import MainReader
-
 ALLOWED_SATELLITES = ["MODIS", "VIIRS", "MISR"]
 
 class SatelliteReader(MainReader):
