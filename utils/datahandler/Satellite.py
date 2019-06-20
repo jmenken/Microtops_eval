@@ -52,7 +52,8 @@ class SatelliteReader(MainReader):
     def __read_MODIS_NC(modis_nc):
         logging.info("Reading modis.nc ...")
         ds_loaded = xr.open_dataset(modis_nc, chunks=10)
-        return ds_loaded.set_index(dim_0=("time","lat","lon"))
+        # return ds_loaded.set_index(dim_0=("time","lat","lon"))
+        return ds_loaded
 
     def __read_MODIS_text(self, modis_nc):
         logging.info("Constructing modis.nc ...")
@@ -67,16 +68,21 @@ class SatelliteReader(MainReader):
         dfs["time"] = ddf.to_datetime(dfs["time"], format="%Y%m%d%H%M")
         df = dfs.compute()
 
+        groupers = [pd.Grouper(key="time", freq="D"), "lat", "lon"]
+        agg_dict = {"AOD": np.mean, "AOD_std": np.mean, "AOD_L2_std": np.mean,
+                    "AOD_obs_err": np.mean, "num": np.sum}
+        df = df.groupby(groupers).agg(agg_dict)
+
+        self.df = df
         logging.debug("Now constructing xarray dataset")
         ds = xr.Dataset(df)
         logging.debug(f"constructed Dataset: {ds}")
 
-        # ds = ds.reset_index("dim_0")
+        ds = ds.reset_index("dim_0")
+        ds = ds.unstack()
 
-        # ds = ds.unstack()
-
-        ds = ds.set_index({"dim_0": "time"}).rename({"dim_0":"time"})
-        ds = ds.resample(time="1D").mean()
+        # ds = ds.set_index({"dim_0": "time"}).rename({"dim_0":"time"})
+        # ds = ds.resample(time="1D").mean()
 
         delayed_write = ds.to_netcdf(modis_nc, mode="w", compute=False)
         with self.client:
@@ -120,6 +126,14 @@ class SatelliteReader(MainReader):
         return lambda x: pd.Timestamp.strptime(x, "%Y%m%d%H%M")
 
 
+    def __create_MMODIS_grid(self, df):
+
+        lats = np.arange(-89.5, 90, 1)
+        lons = np.arange(-179.5, 180, 1)
+        data = np.zeros((len(lats), len(lons)))
+
+
+
     def __read_VIIRS(self):
         files = sorted(glob.glob(self.config["SATELLITES"]["VIIRS"] + "*"))
         ds = xr.open_mfdataset(files,
@@ -151,7 +165,6 @@ class SatelliteReader(MainReader):
 
 
 if __name__ == "__main__":
-    import cartopy.crs as ccrs
     logging.basicConfig(level=logging.DEBUG)
     Sr = SatelliteReader()
 #    viirs = Sr.read_data("VIIRS")
