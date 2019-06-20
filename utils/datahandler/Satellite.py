@@ -48,60 +48,54 @@ class SatelliteReader(MainReader):
         
         return ds
 
+    @staticmethod
+    def __read_MODIS_NC(modis_nc):
+        logging.info("Reading modis.nc ...")
+        ds_loaded = xr.open_dataset(modis_nc, chunks=10)
+        return ds_loaded.set_index(dim_0=("time","lat","lon"))
+
+    def __read_MODIS_text(self, modis_nc):
+        logging.info("Constructing modis.nc ...")
+        files = self.__get_MODIS_files()
+
+        cols = ["time", "lat", "lon", "AOD", "AOD_std", "AOD_L2_std",
+                "AOD_obs_err", "num"]
+
+        dfs = ddf.read_csv(files[:1000][::10], delim_whitespace=True, skiprows=1,
+                           header=0, skipfooter=6, engine="python", names=cols)
+
+        dfs["time"] = ddf.to_datetime(dfs["time"], format="%Y%m%d%H%M")
+        df = dfs.compute()
+
+        logging.debug("Now constructing xarray dataset")
+        ds = xr.Dataset(df)
+        logging.debug(f"constructed Dataset: {ds}")
+
+        # ds = ds.reset_index("dim_0")
+
+        # ds = ds.unstack()
+
+        ds = ds.set_index({"dim_0": "time"}).rename({"dim_0":"time"})
+        ds = ds.resample(time="1D").mean()
+
+        delayed_write = ds.to_netcdf(modis_nc, mode="w", compute=False)
+        with self.client:
+            delayed_write.compute()
+        if os.path.isfile(modis_nc):
+            logging.debug(f"saved file to {modis_nc}")
+        else:
+            logging.critical(f"Modis nc file was not saved {modis_nc}")
+        ds.close()
+        del ds, df
+        gc.collect()
+
     def __read_MODIS(self):
         modis_nc = os.path.join((self.config["SATELLITES"]["MODISNC"]), "modis.nc")
-        if os.path.exists(modis_nc + "asdf"): #TODO: change this back
-            logging.info("Reading modis.nc ...")
-            ds_loaded = xr.open_dataset(modis_nc, chunks=1000)
-#            ds = ds.set_index(dim_0=["time", "lat", "lon"])
-        else:
-            logging.info("Constructing modis.nc ...")
-            files = self.__get_MODIS_files()
-            
-            cols = ["time", "lat", "lon", "AOD", "AOD_std", "AOD_L2_std",
-                    "AOD_obs_err", "num"]
+        if not os.path.exists(modis_nc + "a"):
+            self.__read_MODIS_text(modis_nc)
 
-            df =ddf.concat([ddf.from_delayed(delayed(pd.read_csv(file, delim_whitespace=True, skiprows=1,
-                                            header=0, skipfooter=6, engine="python",
-                                            parse_dates=[0], names=cols,
-                                            date_parser=self.__get_MODIS_time())))
-                                for file in tqdm(files[:1000], desc="concat")], axis=0)
+        ds_loaded = self.__read_MODIS_NC(modis_nc)
 
-            self.client.compute(df)
-
-            logging.debug(f"Constructed pandas dataframe.")
-            
-            # get daily data for each lat, lon
-            groupers = [pd.Grouper(key="time", freq="D"), "lat", "lon"]
-            agg_dict = {"AOD": da.mean, "AOD_std": da.mean, "AOD_L2_std": da.mean,
-                        "AOD_obs_err": da.mean, "num": da.sum}
-
-            logging.debug("Now constructing groupby")
-
-            df = df.groupby(groupers).agg(agg_dict)
-
-            df = self.client.compute(df.compute())
-
-
-            # logging.debug(f"{df_comp}")
-            logging.debug("Now constructing xarray dataset")
-            ds = xr.Dataset(df)
-            logging.debug(f"constructed Dataset: {ds}")
-            
-            ds = ds.reset_index("dim_0")
-            delayed_write = ds.to_netcdf(modis_nc, mode="w", compute=False)
-            with self.client:
-                delayed_write.compute()
-            if os.path.isfile(modis_nc):
-                logging.debug(f"saved file to {modis_nc}")
-            else:
-                logging.critical(f"Modis nc file was not saved {modis_nc}")
-            ds.close()
-            del ds, df
-            gc.collect()
-
-            ds_loaded = xr.open_dataset(modis_nc, chunks=1000)
-        
         return ds_loaded
     
     def __get_MODIS_files(self):
@@ -157,6 +151,7 @@ class SatelliteReader(MainReader):
 
 
 if __name__ == "__main__":
+    import cartopy.crs as ccrs
     logging.basicConfig(level=logging.DEBUG)
     Sr = SatelliteReader()
 #    viirs = Sr.read_data("VIIRS")
