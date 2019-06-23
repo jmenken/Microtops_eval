@@ -100,18 +100,27 @@ if __name__ == "__main__":
     import matplotlib
     from datetime import datetime as dt
     import cartopy.crs as ccrs
+    import cartopy
 
+    ds_AOD = ds.AOD_550nm.sortby(ds.AOD_550nm)
+
+    # ds = ds.isel(dim_0=slice(5000, None))
     ax = plt.axes(projection=ccrs.PlateCarree())
     # ax.coastlines()
+    ax.add_feature(cartopy.feature.LAND)
+    ax.add_feature(cartopy.feature.OCEAN)
+
     # ax.stock_img()
 
     # cmap = matplotlib.cm.get_cmap('viridis')
     # normalize = matplotlib.colors.Normalize(vmin=ds.AOD_550nm.values.min(), vmax=ds.AOD_550nm.values.min())
     # colors = [cmap(normalize(value)) for value in ds.AOD_550nm.values]
 
-    lons = ds.dim_0.Longitude.values
-    lats = ds.dim_0.Latitude.values
-    im = ax.scatter(lons, lats, c=ds.AOD_550nm.values, s=5)
-    plt.colorbar(im)
+    lons = ds_AOD.Longitude.values
+    lats = ds_AOD.Latitude.values
+    im = ax.scatter(lons, lats, c=ds_AOD.values, s=0.1, cmap="inferno_r", vmax=2)
+    plt.colorbar(im, extend="max")
+    plt.tight_layout()
+    plt.savefig("man_test.pdf")
     plt.show()
     
