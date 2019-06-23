@@ -7,7 +7,6 @@ import dask.array as da
 from dask.distributed import Client
 from dask.delayed import delayed
 import numpy as np
-import abc
 from datetime import datetime as dt
 from MainReader import MainReader
 import logging
@@ -51,53 +50,81 @@ class SatelliteReader(MainReader):
     @staticmethod
     def __read_MODIS_NC(modis_nc):
         logging.info("Reading modis.nc ...")
-        ds_loaded = xr.open_dataset(modis_nc, chunks=10)
+        ds_loaded = xr.open_dataset(modis_nc, chunks=100)
         # return ds_loaded.set_index(dim_0=("time","lat","lon"))
         return ds_loaded
 
+    @staticmethod
+    def __chunk_list(list, size):
+        for i in range(0, len(list), size):
+            yield list[i:i + size]
+
     def __read_MODIS_text(self, modis_nc):
         logging.info("Constructing modis.nc ...")
-        files = self.__get_MODIS_files()
+        all_files = self.__get_MODIS_files()
+        size = 1000
 
-        cols = ["time", "lat", "lon", "AOD", "AOD_std", "AOD_L2_std",
+        cols = ["time", "lon", "lat", "AOD", "AOD_std", "AOD_L2_std",
                 "AOD_obs_err", "num"]
 
-        dfs = ddf.read_csv(files[:1000][::10], delim_whitespace=True, skiprows=1,
-                           header=0, skipfooter=6, engine="python", names=cols)
+        counter = 0
+        chunks = [x for x in self._chunk_list(all_files, size)]
+        for files in tqdm(chunks):
+            save_name = modis_nc.replace(".nc", f"_{counter}.nc")
+            dfs = ddf.read_csv(files, delim_whitespace=True, skiprows=1,
+                               header=0, skipfooter=6, engine="python", names=cols)
 
-        dfs["time"] = ddf.to_datetime(dfs["time"], format="%Y%m%d%H%M")
-        df = dfs.compute()
+            dfs["time"] = ddf.to_datetime(dfs["time"], format="%Y%m%d%H%M")
+            df = dfs.compute()
 
-        groupers = [pd.Grouper(key="time", freq="D"), "lat", "lon"]
-        agg_dict = {"AOD": np.mean, "AOD_std": np.mean, "AOD_L2_std": np.mean,
-                    "AOD_obs_err": np.mean, "num": np.sum}
-        df = df.groupby(groupers).agg(agg_dict)
+            groupers = [pd.Grouper(key="time", freq="D"), "lat", "lon"]
+            agg_dict = {"AOD": np.mean, "AOD_std": np.mean, "AOD_L2_std": np.mean,
+                        "AOD_obs_err": np.mean, "num": np.sum}
+            df = df.groupby(groupers).agg(agg_dict)
 
-        self.df = df
-        logging.debug("Now constructing xarray dataset")
-        ds = xr.Dataset(df)
-        logging.debug(f"constructed Dataset: {ds}")
+            self.df = df
+            logging.debug("Now constructing xarray dataset")
+            ds = xr.Dataset(df)
+            logging.debug(f"constructed Dataset: {ds}")
+            ds = ds.unstack()
 
-        ds = ds.reset_index("dim_0")
-        ds = ds.unstack()
+            delayed_write = ds.to_netcdf("./tmp.nc", mode="w", compute=False)
+            with self.client:
+                delayed_write.compute()
+            ds.close()
+            del ds
+            gc.collect()
 
-        # ds = ds.set_index({"dim_0": "time"}).rename({"dim_0":"time"})
-        # ds = ds.resample(time="1D").mean()
+            ds = xr.open_dataset("./tmp.nc", chunks=100)
 
-        delayed_write = ds.to_netcdf(modis_nc, mode="w", compute=False)
+            logging.debug("Unstacked the dataset")
+
+            ds = self.__create_MODIS_grid(ds)
+
+            delayed_write = ds.to_netcdf(save_name, mode="w", compute=False)
+            with self.client:
+                delayed_write.compute()
+            if os.path.isfile(save_name):
+                logging.debug(f"saved file to {save_name}")
+            else:
+                logging.critical(f"Modis nc file was not saved {save_name}")
+            ds.close()
+            counter += 1
+
+        final_files = []
+        for i in range(counter):
+            final_files.append(modis_nc.replace(".nc", f"_{i}.nc"))
+
+        ds = xr.open_mfdataset(final_files, concat_dim="time")
+
+        delayed_write = ds.to_netcdf(modis_nc,compute=False)
         with self.client:
             delayed_write.compute()
-        if os.path.isfile(modis_nc):
-            logging.debug(f"saved file to {modis_nc}")
-        else:
-            logging.critical(f"Modis nc file was not saved {modis_nc}")
-        ds.close()
-        del ds, df
-        gc.collect()
+
 
     def __read_MODIS(self):
         modis_nc = os.path.join((self.config["SATELLITES"]["MODISNC"]), "modis.nc")
-        if not os.path.exists(modis_nc + "a"):
+        if not os.path.exists(modis_nc):
             self.__read_MODIS_text(modis_nc)
 
         ds_loaded = self.__read_MODIS_NC(modis_nc)
@@ -126,11 +153,33 @@ class SatelliteReader(MainReader):
         return lambda x: pd.Timestamp.strptime(x, "%Y%m%d%H%M")
 
 
-    def __create_MMODIS_grid(self, df):
+    def __create_MODIS_grid(self, ds):
 
         lats = np.arange(-89.5, 90, 1)
         lons = np.arange(-179.5, 180, 1)
-        data = np.zeros((len(lats), len(lons)))
+        time = ds.time.values
+        data = np.zeros((len(time), len(lats), len(lons)))
+        data[:] = np.nan
+
+        coord_dict = {
+            "time": time,
+            "lat": lats,
+            "lon": lons
+        }
+
+        empty_data_array = xr.DataArray(data, dims=("time", "lat", "lon"), coords=coord_dict).chunk(100)
+
+        ds_dict = {}
+        for key in ds.keys():
+            ds_dict[key] = empty_data_array.copy()
+
+        ds_empty = xr.Dataset(ds_dict)
+        logging.info("Created empty dataset")
+
+        with self.client:
+            ds_regridded = ds.combine_first(ds_empty).compute()
+
+        return ds_regridded
 
 
 
@@ -165,8 +214,8 @@ class SatelliteReader(MainReader):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.WARNING)
     Sr = SatelliteReader()
-#    viirs = Sr.read_data("VIIRS")
-#    misr = Sr.read_data("MISR")
+    viirs = Sr.read_data("VIIRS")
+    misr = Sr.read_data("MISR")
     modis = Sr.read_data("MODIS")

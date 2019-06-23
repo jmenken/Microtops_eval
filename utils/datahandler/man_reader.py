@@ -6,7 +6,9 @@ import os
 import pandas as pd
 import numpy as np
 import xarray as xr
-from .MainReader import MainReader
+from MainReader import MainReader
+import dask.dataframe as ddf
+from tqdm import tqdm
 
 class MANReader(MainReader):
     
@@ -45,7 +47,7 @@ class MANReader(MainReader):
                         for file in filelist), axis=0, sort=True)
         
         df.rename(lambda x: x.replace(" ", "_"), axis="columns", inplace=True)
-        df.rename(lambda x: x.replace("-", "_") , axis="columns", inplace=True)
+        df.rename(lambda x: x.replace("-", "_"), axis="columns", inplace=True)
         df = self.__assign_aod550(df)
         
         if self.sampled == "daily":
@@ -89,6 +91,27 @@ def main():
     return ds
     
 if __name__ == "__main__":
-    man_ds = main()
-    
+    # man_ds = main()
+    man = MANReader()
+    df = man.read_data()
+    ds = man.df_to_ds(df)
+
+    import matplotlib.pyplot as plt
+    import matplotlib
+    from datetime import datetime as dt
+    import cartopy.crs as ccrs
+
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    # ax.coastlines()
+    # ax.stock_img()
+
+    # cmap = matplotlib.cm.get_cmap('viridis')
+    # normalize = matplotlib.colors.Normalize(vmin=ds.AOD_550nm.values.min(), vmax=ds.AOD_550nm.values.min())
+    # colors = [cmap(normalize(value)) for value in ds.AOD_550nm.values]
+
+    lons = ds.dim_0.Longitude.values
+    lats = ds.dim_0.Latitude.values
+    im = ax.scatter(lons, lats, c=ds.AOD_550nm.values, s=5)
+    plt.colorbar(im)
+    plt.show()
     

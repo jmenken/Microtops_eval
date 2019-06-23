@@ -11,3 +11,8 @@ class MainReader(object):
         config = configparser.ConfigParser(interpolation=ExtendedInterpolation())
         config.read(os.path.abspath(file))
         return config
+
+    @staticmethod
+    def _chunk_list(list, size):
+        for i in range(0, len(list), size):
+            yield list[i:i + size]
