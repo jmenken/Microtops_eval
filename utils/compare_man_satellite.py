@@ -103,7 +103,7 @@ def plot_on_map(lats, lons, values, plot_name, sizes=None, extend="both" ):
     ax = plt.axes(projection=ccrs.PlateCarree())
     # ax.coastlines()
     ax.add_feature(cartopy.feature.LAND)
-    ax.add_feature(cartopy.feature.OCEAN)
+    ax.add_feature(cartopy.feature.OCEAN, facecolor='darkgrey')
 
     im = ax.scatter(lons, lats, c=values, s=sizes, cmap="bwr", vmin=-0.75, vmax=0.75)
     plt.colorbar(im, extend=extend)
