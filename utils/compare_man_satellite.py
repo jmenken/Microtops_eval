@@ -7,6 +7,8 @@ from datahandler.man_reader import main as man_reader
 from datahandler.Satellite import SatelliteReader
 import numpy as np
 import logging
+import xarray as xr
+from tqdm import tqdm
 
 def plot_man_data():
     ds_man = man_reader()
@@ -25,27 +27,23 @@ def plot_man_data():
     plt.savefig("man_test.pdf")
     plt.show()
 
+def distance(man, satellite):
+    return man - satellite
 
-def compare_man_satellite(man_data, satellite_data, compare_func):
-    pass
 
+def compare_man_modis(man_data, modis_data, compare_func):
 
-def check_nan(data_array):
-    if np.any(np.isnan(data_array.values)):
-        logging.debug("There are still nans")
-        return True
-    else:
-        return False
+    geo_window = 1.5  # in degrees
+    time_window = 1  # in days
+    man_data_index = np.where(man_data.Datetime.values == np.datetime64("2015-01-01"))
+    man_data = man_data.isel(dim_0=slice(man_data_index[0][0], None))
 
-if __name__ == "__main__":
-    man_data = man_reader()
-    Sr = SatelliteReader()
-    modis_data = Sr.read_data("MODIS")
+    dists = []
+    lats = []
+    lons = []
+    times = []
 
-    geo_window = 1.5 # in degrees
-    time_window = 2 # in days
-
-    for i, entry in enumerate(man_data.dim_0[:50]):
+    for i, entry in enumerate(tqdm(man_data.dim_0)):
         time = man_data.Datetime.isel(dim_0=i).values
         lat = man_data.Latitude.isel(dim_0=i).values
         lon = man_data.Longitude.isel(dim_0=i).values
@@ -57,16 +55,73 @@ if __name__ == "__main__":
         time_max = time + np.timedelta64(time_window, "D")
         time_min = time - np.timedelta64(time_window, "D")
 
-        satellite_AOD = modis_data.AOD.sel(time=time, method="nearest").sel(dict(lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max)))
-        still_nans = check_nan(satellite_AOD)
-        nan_counter = 0
-        satellite_AOD_no_nan = satellite_AOD.dropna("lat", how="all").dropna("lon", how="all")
-        while still_nans:
-            nan_counter += 1
-            satellite_AOD_no_nan = satellite_AOD_no_nan.dropna("lat", how="all").dropna("lon", how="all")
-            still_nans = check_nan(satellite_AOD_no_nan)
-            if nan_counter > 10:
-                raise RuntimeError("Nans were not removed after 10 loops.")
+        try:
+            satellite_AOD = modis_data.AOD.sel(
+                dict(lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max), time=slice(time_min, time_max)))
+            satellite_AOD_stacked = satellite_AOD.stack(dim_0=("time", "lat", "lon"))
+            satellite_AOD_stacked = satellite_AOD_stacked[satellite_AOD_stacked.notnull()]
+            if len(satellite_AOD_stacked.values) == 0:
+                continue
+
+            satellite_AOD_point = satellite_AOD_stacked.unstack().sel(dict(time=time, lat=lat, lon=lon), method="nearest")
+            man_AOD_point = man_data.isel(dim_0=i).AOD_550nm.unstack()
+            dist = compare_func(man_AOD_point.values, satellite_AOD_point.values)
+        except ValueError:
+            logging.warning(f"Skipped value {i}")
+            continue
+
+        dists.append(dist)
+        lats.append(lat)
+        lons.append(lon)
+        times.append(time)
+    dists = np.asarray(dists)
+    times = np.asarray(times)
+    lats = np.asarray(lats)
+    lons = np.asarray(lons)
+
+    return lats, lons, dists, times
+
+
+def check_nan(data_array):
+    if np.any(np.isnan(data_array.values)):
+        logging.debug("There are still nans")
+        return True
+    else:
+        return False
+
+def plot_on_map(lats, lons, values, plot_name, sizes=None, extend="both" ):
+    import matplotlib.pyplot as plt
+    import matplotlib
+    from datetime import datetime as dt
+    import cartopy.crs as ccrs
+    import cartopy
+
+    if sizes is None:
+        sizes = 1
+
+    # ds = ds.isel(dim_0=slice(5000, None))
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    # ax.coastlines()
+    ax.add_feature(cartopy.feature.LAND)
+    ax.add_feature(cartopy.feature.OCEAN)
+
+    im = ax.scatter(lons, lats, c=values, s=sizes, cmap="bwr", vmin=-0.75, vmax=0.75)
+    plt.colorbar(im, extend=extend)
+    plt.tight_layout()
+    plt.savefig(plot_name)
+    plt.show()
+
+
+if __name__ == "__main__":
+    Sr = SatelliteReader()
+    modis_data = Sr.read_data("MODIS")
+
+    man_data = man_reader()
+
+    lats, lons, dists, times = compare_man_modis(man_data, modis_data, distance)
+    plot_on_map(lats, lons, dists, "dists.pdf", sizes=np.power(np.abs(dists)+1, 2))
+
+
 
 
 
