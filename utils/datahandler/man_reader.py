@@ -6,7 +6,7 @@ import os
 import pandas as pd
 import numpy as np
 import xarray as xr
-from .MainReader import MainReader
+from utils.datahandler.MainReader import MainReader
 import dask.dataframe as ddf
 from tqdm import tqdm
 
