@@ -8,7 +8,7 @@ from dask.distributed import Client
 from dask.delayed import delayed
 import numpy as np
 from datetime import datetime as dt
-from MainReader import MainReader
+from .MainReader import MainReader
 import logging
 from tqdm import tqdm
 import gc
