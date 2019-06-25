@@ -30,6 +30,9 @@ def plot_man_data():
 def distance(man, satellite):
     return man - satellite
 
+def relative_error(man, satellite):
+    return (man - satellite) / man * 100
+
 
 def compare_man_modis(man_data, modis_data, compare_func):
 
@@ -89,25 +92,32 @@ def check_nan(data_array):
     else:
         return False
 
-def plot_on_map(lats, lons, values, plot_name, sizes=None, extend="both" ):
+def plot_on_map(lats, lons, values, plot_name, sizes=None, extend="neither", cmap="inferno_r" ,vmin=None, vmax=None,
+                value_name=""):
     import matplotlib.pyplot as plt
-    import matplotlib
-    from datetime import datetime as dt
     import cartopy.crs as ccrs
     import cartopy
+    import matplotlib.ticker as mticker
+    from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 
     if sizes is None:
         sizes = 1
 
     # ds = ds.isel(dim_0=slice(5000, None))
+    fig = plt.figure(figsize=(12, 5))
     ax = plt.axes(projection=ccrs.PlateCarree())
-    # ax.coastlines()
-    ax.add_feature(cartopy.feature.LAND)
-    ax.add_feature(cartopy.feature.OCEAN, facecolor='darkgrey')
+    ax.set_global()
+    ax.add_feature(cartopy.feature.LAND, facecolor="lightgrey")
+    ax.add_feature(cartopy.feature.OCEAN, facecolor="grey")
 
-    im = ax.scatter(lons, lats, c=values, s=sizes, cmap="bwr", vmin=-0.75, vmax=0.75)
-    plt.colorbar(im, extend=extend)
-    plt.tight_layout()
+    gl = ax.gridlines(draw_labels=True, linewidth=2, color='white', alpha=0.5, linestyle='--')
+    gl.ylocator = mticker.FixedLocator(np.arange(-90, 91, 30))
+    gl.xlocator = mticker.FixedLocator(np.arange(-180, 181, 60))
+    gl.xformatter = LONGITUDE_FORMATTER
+    gl.yformatter = LATITUDE_FORMATTER
+    im = ax.scatter(lons, lats, c=values, s=sizes, cmap=cmap, vmin=vmin, vmax=vmax)
+    plt.colorbar(im, extend=extend, label=value_name)
+    # plt.tight_layout()
     plt.savefig(plot_name)
     plt.show()
 
@@ -118,11 +128,13 @@ if __name__ == "__main__":
 
     man_data = man_reader()
 
+
+    # relative distance:
+    # lats, lons, dists, times = compare_man_modis(man_data, modis_data, relative_error)
+    # plot_on_map(lats, lons, dists, "dists_relative.pdf", sizes=np.power(np.abs(dists/100)+1, 2), cmap="PiYG", vmin=-200, vmax=200,
+    #             extend="both", value_name="Relative distance [%]")
+
+    # absolute distance:
     lats, lons, dists, times = compare_man_modis(man_data, modis_data, distance)
-    plot_on_map(lats, lons, dists, "dists.pdf", sizes=np.power(np.abs(dists)+1, 2))
-
-
-
-
-
-
+    plot_on_map(lats, lons, dists, "dists_absolute.pdf", sizes=np.power(np.abs(dists)+1.5, 3), cmap="PiYG", vmin=-0.3, vmax=0.3,
+                extend="both", value_name="Absolute distance")
