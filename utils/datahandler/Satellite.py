@@ -204,6 +204,7 @@ class SatelliteReader(MainReader):
                                concat_dim="time",
                                preprocess=self.__get_MISR_time)
         ds = ds.sel(time=slice(self.start_date, self.end_date))
+        ds = ds.rename({"Latitude": "lat", "Longitude": "lon"})
         return ds
     
     @staticmethod
