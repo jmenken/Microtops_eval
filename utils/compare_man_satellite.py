@@ -47,10 +47,15 @@ def join_man_sat(man_data, sat_data, sat_name):
     aod_sat = {"MODIS": "AOD", "VIIRS": "AOD550", "MISR": "Aerosol_Optical_Depth"}
     geo_window = 1.5  # in degrees
     time_window = 1  # in days
-    sat_data = sat_data.sortby(["time", "lat", "lon"])
+
+    sat_data = sat_data[aod_sat[sat_name]].sortby(["time", "lat", "lon"])
+    if sat_name == "MISR":
+        sat_data = sat_data.sel(dict(Optical_Depth_Range="all"))
+
     starttime = sat_data.time.values[0] - np.timedelta64(time_window, "D")
     endtime = sat_data.time.values[-1] + np.timedelta64(time_window, "D")
     man_data = man_data.sel(dim_0=slice(starttime, endtime))
+    sat_data = sat_data.sel(time=slice(starttime, endtime))
 
     data = {}
     for i, entry in enumerate(tqdm(man_data.dim_0)):
@@ -65,14 +70,11 @@ def join_man_sat(man_data, sat_data, sat_name):
         time_max = time + np.timedelta64(time_window, "D")
         time_min = time - np.timedelta64(time_window, "D")
 
-        sel_dict = dict(lat=slice(lat_min, lat_max),
-                        lon=slice(lon_min, lon_max),
-                        time=slice(time_min, time_max))
-        if sat_name == "MISR":
-            sel_dict["Optical_Depth_Range"] = "all"
-
         try:
-            sat_aod = sat_data[aod_sat[sat_name]].sel(sel_dict)
+            sat_aod = sat_data.sel(
+                dict(lat=slice(lat_min, lat_max),
+                     lon=slice(lon_min, lon_max),
+                     time=slice(time_min, time_max)))
         except ValueError:
             logging.warning(f"Skipped value {i}")
             continue
@@ -105,8 +107,23 @@ def join_man_sat(man_data, sat_data, sat_name):
 #         return True
 #     else:
 #         return False
+def size_func_1(x):
+    return np.power(np.abs(x / 100) + 1, 2)
 
-def plot_on_map(data, plot_name, sizes=1, extend="neither",
+
+def unsize_func_1(x):
+    return (np.sqrt(x) - 1) * 100
+
+
+def size_func_2(x):
+    return np.power(np.abs(x) + 1.5, 3)
+
+
+def unsize_func_2(x):
+    return np.cbrt(x) - 1.5
+
+
+def plot_on_map(data, plot_name, sizefunc=None, unsizefunc=None, extend="neither",
                 cmap="inferno_r", vmin=None, vmax=None, value_name=""):
     lats = data.reset_index()["lat"].values
     lons = data.reset_index()["lon"].values
@@ -127,9 +144,18 @@ def plot_on_map(data, plot_name, sizes=1, extend="neither",
     gl.xlocator = mticker.FixedLocator(np.arange(-180, 181, 60))
     gl.xformatter = LONGITUDE_FORMATTER
     gl.yformatter = LATITUDE_FORMATTER
-    im = ax.scatter(lons, lats, c=values, s=sizes, cmap=cmap, vmin=vmin,
-                    vmax=vmax)
+
+    im = ax.scatter(lons, lats, c=values, s=sizefunc(values), cmap=cmap,
+                    vmin=vmin, vmax=vmax)
+
     plt.colorbar(im, extend=extend, label=value_name)
+    handles, labels = im.legend_elements(prop="sizes", alpha=0.6, num=6,
+                                         func=unsizefunc)
+    max_point = handles[-1].get_markersize()
+    ax.legend(handles, labels, frameon=False,
+              labelspacing=0.069*max_point, loc='center left',
+              bbox_to_anchor=(1.16 + (max_point*0.0019), 0.5))
+
     # plt.tight_layout()
     plt.savefig(plot_name)
     plt.show()
@@ -137,28 +163,31 @@ def plot_on_map(data, plot_name, sizes=1, extend="neither",
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-
+    pickle = True
     s = "MISR"
+    if pickle:
+        man_sat = pd.read_pickle("./MAN_{}.pd".format(s))
+    else:
+        Sr = SatelliteReader()
+        man_data = man_reader()
 
-    Sr = SatelliteReader()
-    man_data = man_reader()
+        logging.info("Reading satellite data of {}.".format(s))
+        sat_data = Sr.read_data(s)
 
-    logging.info("Reading satellite data of {}.".format(s))
-    sat_data = Sr.read_data(s)
-
-    logging.info("Joining MAN and satellite data.")
-    man_sat = join_man_sat(man_data, sat_data, s)
+        logging.info("Joining MAN and satellite data.")
+        man_sat = join_man_sat(man_data, sat_data, s)
+        man_sat.to_pickle("./MAN_{}.pd".format(s))
 
     # relative distance:
-    man_sat_rel = compare_man_sat(man_sat, s, relative_error)
+    man_sat_rel = compare_man_sat(man_sat, s, relative_error).dropna()
     plot_on_map(man_sat_rel, "{}_dists_relative.pdf".format(s),
-                sizes=np.power(np.abs(man_sat_rel.values/100)+1, 2),
+                sizefunc=size_func_1, unsizefunc=unsize_func_1,
                 cmap="PiYG", vmin=-200, vmax=200, extend="both",
                 value_name="Relative distance [%]")
 
     # absolute distance:
-    man_sat_dist = compare_man_sat(man_sat, s, distance)
+    man_sat_dist = compare_man_sat(man_sat, s, distance).dropna()
     plot_on_map(man_sat_dist, "{}_dists_absolute.pdf".format(s),
-                sizes=np.power(np.abs(man_sat_dist.values)+1.5, 3),
+                sizefunc=size_func_2, unsizefunc=unsize_func_2,
                 cmap="PiYG", vmin=-0.3, vmax=0.3, extend="both",
                 value_name="Absolute distance")
